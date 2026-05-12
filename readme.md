@@ -102,9 +102,9 @@ When it finishes, results are saved to the `results/` folder.
 
 Open the `results/` folder. You'll see files named like:
 
-- `run-2026-05-12T10-30-00.csv` — **open this one** in Google Sheets or Excel
-- `run-2026-05-12T10-30-00.json` — developer format, you can ignore this
-- `failures-2026-05-12T10-30-00.json` — developer format, you can ignore this
+- `run-2026-05-12T10-30-00.csv` — **open this one** in Spreadsheets APP
+- `run-2026-05-12T10-30-00.json` — JSON format
+- `failures-2026-05-12T10-30-00.json` — JSON format
 
 To open the CSV in **Google Sheets**: go to [sheets.google.com](https://sheets.google.com) → File → Import → Upload the CSV file.
 
@@ -278,7 +278,7 @@ A response is classified as failed if `generated === false` OR the `text` field 
 | File | Contents |
 |---|---|
 | `run-{timestamp}.csv` | **Main results file** — one row per combination with all stats and isolation columns |
-| `run-{timestamp}.json` | Full raw results for developers — includes complete request/response payloads |
+| `run-{timestamp}.json` | Full raw results — includes complete request/response payloads |
 | `failures-{timestamp}.json` | Failed combinations only — complete payloads ready for Postman or curl |
 | `analysis-{timestamp}.csv` | Cross-run aggregation (only created by `npx tsx analyze.ts`) |
 
