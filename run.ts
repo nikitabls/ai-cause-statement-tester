@@ -31,21 +31,8 @@ const BASE_URL = `https://api.test-004.doublegood.com/ai-assistant/users/${USER_
 // Randomisation helpers
 // ---------------------------------------------------------------------------
 
-const EVENT_NAMES = [
-  "Spring Fundraiser",
-  "Annual Drive",
-  "Fall Campaign",
-  "End-of-Year Gala",
-  "Community Bash",
-];
-
-const ORG_NAMES = [
-  "Lincoln High School",
-  "Riverside Community",
-  "Sunset Academy",
-  "Greenwood Booster Club",
-  "Maplewood Athletics",
-];
+const EVENT_NAMES = (process.env.EVENT_NAMES ?? "").split(",").map((s) => s.trim()).filter(Boolean);
+const ORG_NAMES = (process.env.ORG_NAMES ?? "").split(",").map((s) => s.trim()).filter(Boolean);
 
 const ALL_TAGS = Object.values(CauseTag);
 
