@@ -225,8 +225,8 @@ You can customize the tool's behavior by editing these values in your `.env` fil
 | `CONCURRENCY` | `5` | How many combinations to test at the same time. Higher = faster run, but more load on the server. |
 | `RUNS_PER_COMBO` | `1` | How many independent passes to make over each combination (each with fresh random inputs). `1` is fine for a quick check; use `3`+ for higher confidence. |
 | `FLAKINESS_RUNS` | `3` | How many times to send the **exact same request** per combination to detect flakiness. Higher = more accurate flak detection, longer run time. |
-| `EVENT_NAMES` | *(5 built-in names)* | Comma-separated list of fundraiser event names to pick from randomly (e.g. `Spring Fundraiser,Annual Drive`). Overrides the built-in defaults entirely. |
-| `ORG_NAMES` | *(5 built-in names)* | Comma-separated list of organization names to pick from randomly (e.g. `Lincoln High School,Riverside Community`). Overrides the built-in defaults entirely. |
+| `EVENT_NAMES_[SLUG]` | *(required)* | Comma-separated list of fundraiser event names for a specific fundraiser category. **All 9 are required** — the tool will exit immediately with an error if any are missing. Valid slugs: `ARTS`, `COMMUNITY`, `EDUCATION`, `HEALTH`, `RELIGIOUS`, `GREEK`, `SPORTS`, `OTHER`, `PERSONAL`. Example: `EVENT_NAMES_SPORTS=Season Kickoff Fund,Championship Sendoff,Game Day Campaign` |
+| `ORG_NAMES_[SLUG]` | *(required)* | Comma-separated list of organization names for a specific fundraiser category. Same 9 slugs as above. Example: `ORG_NAMES_SPORTS=Falcon Athletic Boosters,Summit Soccer Club,Team United` |
 
 Example — run faster with less thorough flakiness checking:
 ```sh

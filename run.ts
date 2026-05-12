@@ -31,13 +31,50 @@ const BASE_URL = `https://api.test-004.doublegood.com/ai-assistant/users/${USER_
 // Randomisation helpers
 // ---------------------------------------------------------------------------
 
-const EVENT_NAMES = (process.env.EVENT_NAMES ?? "").split(",").map((s) => s.trim()).filter(Boolean);
-const ORG_NAMES = (process.env.ORG_NAMES ?? "").split(",").map((s) => s.trim()).filter(Boolean);
+const CATEGORY_KEY_MAP: Record<string, string> = {
+  "Arts & Culture": "ARTS",
+  "Associations, Clubs & Community": "COMMUNITY",
+  "Education & Academics": "EDUCATION",
+  "Health & Wellness": "HEALTH",
+  "Religious Organization": "RELIGIOUS",
+  "Sororities & Fraternities": "GREEK",
+  "Sports & Athletics": "SPORTS",
+  "Other": "OTHER",
+  "Personal": "PERSONAL",
+};
+
+function loadCategoryNames(field: "EVENT" | "ORG"): Record<string, string[]> {
+  const map: Record<string, string[]> = {};
+  for (const [orgType, slug] of Object.entries(CATEGORY_KEY_MAP)) {
+    const key = `${field}_NAMES_${slug}`;
+    const raw = process.env[key];
+    if (!raw || raw.trim() === "") {
+      console.error(`ERROR: ${key} is not set in .env`);
+      process.exit(1);
+    }
+    const values = raw.split(",").map((s) => s.trim()).filter(Boolean);
+    if (values.length === 0) {
+      console.error(`ERROR: ${key} is empty in .env`);
+      process.exit(1);
+    }
+    map[orgType] = values;
+  }
+  return map;
+}
+
+const EVENT_NAMES_BY_CATEGORY = loadCategoryNames("EVENT");
+const ORG_NAMES_BY_CATEGORY = loadCategoryNames("ORG");
 
 const ALL_TAGS = Object.values(CauseTag);
 
 function randomPick<T>(arr: T[]): T {
   return arr[Math.floor(Math.random() * arr.length)];
+}
+
+function categoryPick(orgType: string, field: "EVENT" | "ORG"): string {
+  const map = field === "EVENT" ? EVENT_NAMES_BY_CATEGORY : ORG_NAMES_BY_CATEGORY;
+  const list = map[orgType] ?? map["Other"];
+  return randomPick(list);
 }
 
 /** Returns a random non-empty subset of CauseTag values */
@@ -192,7 +229,7 @@ async function runIsolation(combo: Combination): Promise<IsolationVariant[]> {
       tags: v.tags,
       template: {
         replaceable_attributes: {
-          FUNDRAISING_EVENT_NAME: v.eventName ?? randomPick(EVENT_NAMES),
+          FUNDRAISING_EVENT_NAME: v.eventName ?? categoryPick(combo.FUNDRAISER_ORGANIZATION_TYPE, "EVENT"),
           FUNDRAISER_ORGANIZATION_TYPE: combo.FUNDRAISER_ORGANIZATION_TYPE,
           FUNDRAISER_ACTIVITY: combo.FUNDRAISER_ACTIVITY,
           ...(combo.FUNDRAISER_AFFILIATION ? { FUNDRAISER_AFFILIATION: combo.FUNDRAISER_AFFILIATION } : {}),
@@ -220,8 +257,8 @@ async function runRequest(
     tags: randomTags(),
     template: {
       replaceable_attributes: {
-        FUNDRAISING_EVENT_NAME: randomPick(EVENT_NAMES),
-        FUNDRAISER_ORGANIZATION_NAME: randomPick(ORG_NAMES),
+        FUNDRAISING_EVENT_NAME: categoryPick(combo.FUNDRAISER_ORGANIZATION_TYPE, "EVENT"),
+        FUNDRAISER_ORGANIZATION_NAME: categoryPick(combo.FUNDRAISER_ORGANIZATION_TYPE, "ORG"),
         FUNDRAISER_ORGANIZATION_TYPE: combo.FUNDRAISER_ORGANIZATION_TYPE,
         FUNDRAISER_ACTIVITY: combo.FUNDRAISER_ACTIVITY,
         ...(combo.FUNDRAISER_AFFILIATION
