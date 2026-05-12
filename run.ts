@@ -481,7 +481,8 @@ async function main() {
     "event_name", "org_name", "tags",
     "http_status", "latency_ms",
     "flak_label", "flak_rate", "attempts_total", "attempts_failed",
-    "fail_reason", "first_response_text",
+    "fail_reason",
+    ...Array.from({ length: FLAKINESS_RUNS }, (_, i) => `attempt_${i + 1}_text`),
     // one column per isolation variant
     ...ISOLATION_VARIANTS.map((v) => `iso:${v.variant}`),
   ].join(",");
@@ -506,7 +507,7 @@ async function main() {
       r.allAttempts.length,
       attFailed,
       q(r.failReason),
-      q(r.response?.text),
+      ...r.allAttempts.map((a) => q(a.response?.text)),
       ...isoValues,
     ].join(",");
   });
