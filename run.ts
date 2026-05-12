@@ -483,15 +483,17 @@ async function main() {
     "flak_label", "flak_rate", "attempts_total", "attempts_failed",
     "fail_reason",
     ...Array.from({ length: FLAKINESS_RUNS }, (_, i) => `attempt_${i + 1}_text`),
-    // one column per isolation variant
-    ...ISOLATION_VARIANTS.map((v) => `iso:${v.variant}`),
+    // two columns per isolation variant: flak% and first attempt text
+    ...ISOLATION_VARIANTS.flatMap((v) => [`iso:${v.variant}`, `iso:${v.variant}:text`]),
   ].join(",");
 
   const csvRows = results.map((r) => {
     const attFailed = r.allAttempts.filter((a) => a.failed).length;
-    const isoValues = ISOLATION_VARIANTS.map((v) => {
+    const isoValues = ISOLATION_VARIANTS.flatMap((v) => {
       const iso = r.isolationResults.find((x) => x.variant === v.variant);
-      return iso ? `${(iso.flakRate * 100).toFixed(0)}%` : "";
+      return iso
+        ? [`${(iso.flakRate * 100).toFixed(0)}%`, q(iso.attempts[0]?.response?.text)]
+        : ["", ""];
     });
     return [
       q(r.combination.FUNDRAISER_ORGANIZATION_TYPE),
