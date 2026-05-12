@@ -205,10 +205,10 @@ async function runIsolation(combo: Combination): Promise<IsolationVariant[]> {
       tags: v.tags,
       template: {
         replaceable_attributes: {
+          FUNDRAISING_EVENT_NAME: v.eventName ?? randomPick(EVENT_NAMES),
           FUNDRAISER_ORGANIZATION_TYPE: combo.FUNDRAISER_ORGANIZATION_TYPE,
           FUNDRAISER_ACTIVITY: combo.FUNDRAISER_ACTIVITY,
           ...(combo.FUNDRAISER_AFFILIATION ? { FUNDRAISER_AFFILIATION: combo.FUNDRAISER_AFFILIATION } : {}),
-          ...(v.eventName ? { FUNDRAISING_EVENT_NAME: v.eventName } : {}),
           ...(v.orgName ? { FUNDRAISER_ORGANIZATION_NAME: v.orgName } : {}),
         },
       },

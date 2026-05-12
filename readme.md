@@ -1,129 +1,249 @@
 # AI Cause Statement Tester
 
-A CLI tool for stress-testing the Double Good cause statement generation endpoint. It exhaustively tests every taxonomy combination, measures flakiness, runs isolation tests on failing combos to identify root causes, and outputs structured JSON and CSV results for analysis.
+This tool automatically tests whether the AI-generated cause statement feature works correctly across every fundraiser type in the app. It sends test requests to the API for all 176 combinations of organization type, activity, and affiliation, then tells you which ones always work, which ones sometimes fail, and which ones are completely broken — so the team can prioritize fixes.
 
 ---
 
-## Setup
+## Before you start
+
+You need **Node.js** installed on your computer. It's free software that runs this tool.
+
+1. Go to [nodejs.org](https://nodejs.org) and download the **LTS** version (the one labeled "Recommended for most users")
+2. Run the installer — click through all the defaults
+3. To confirm it worked, open **Terminal** (on Mac: press `⌘ Space`, type `Terminal`, press Enter) and run:
+   ```sh
+   node --version
+   ```
+   You should see a version number like `v20.x.x`. If you do, you're ready.
+
+---
+
+## Step 1 — Get your credentials
+
+The tool needs two values from a real app request: a **JWT token** (your login credential) and a **User UUID** (your account ID).
+
+1. Open the Double Good mobile app on your device
+2. Navigate to the cause statement screen and generate a cause statement
+3. In the app's devtools (or using a tool like **Proxyman** or **Charles** on your Mac), find the network request that was just made
+4. Tap **Share full request** (or copy the raw request)
+5. From that request, copy:
+   - The `Authorization` header value — it looks like `Bearer eyJhbGci...`. **Remove the word `Bearer ` from the front** — you only want the long string of letters and numbers after it. This is your `JWT_TOKEN`.
+   - The URL will contain `/users/xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx/text-generation/cause` — the long ID in the middle is your `USER_UUID`.
+
+Keep these values handy for Step 3.
+
+---
+
+## Step 2 — Open the project folder in Terminal
+
+1. Open **Terminal**
+2. Type `cd ` (with a space after it), then drag the project folder from Finder into the Terminal window. The folder path will appear automatically.
+3. Press **Enter**
+
+---
+
+## Step 3 — Install dependencies
+
+Run this once to download the packages the tool needs:
 
 ```sh
 npm install
-cp .env.example .env
-# Fill in JWT_TOKEN and USER_UUID in .env
 ```
 
-### `.env` variables
-
-| Variable | Default | Description |
-|---|---|---|
-| `JWT_TOKEN` | — | **Required.** Bearer token (without the `Bearer ` prefix) |
-| `USER_UUID` | — | **Required.** User UUID used in the endpoint path |
-| `CONCURRENCY` | `5` | Number of combination-level requests to run in parallel |
-| `RUNS_PER_COMBO` | `1` | How many times to run each combo with **fresh random inputs** |
-| `FLAKINESS_RUNS` | `3` | How many times to fire the **same payload** per combo to measure flakiness |
+You'll see a progress log. Wait until it finishes and returns to the prompt.
 
 ---
 
-## Scripts
+## Step 4 — Create your config file
 
-### `npm start` — Run the test suite
+1. Run this command to create your personal config file:
+   ```sh
+   cp .env.example .env
+   ```
+2. Open the newly created `.env` file in any text editor (TextEdit, VS Code, etc.)
+3. Fill in the two values you copied in Step 1:
+   ```
+   JWT_TOKEN=eyJhbGci...   ← paste your token here (no quotes, no "Bearer " prefix)
+   USER_UUID=xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx   ← paste your UUID here
+   ```
+4. Save the file
+
+> **Note:** The `.env` file is personal — it stays on your computer and is never shared or committed to version control.
+
+---
+
+## Step 5 — Run the tests
 
 ```sh
 npm start
-# or with overrides:
-FLAKINESS_RUNS=5 CONCURRENCY=10 npm start
 ```
 
-Fires every leaf combination from `taxonomy.data.ts` against:
-
-```
-POST https://api.test-004.doublegood.com/ai-assistant/users/{USER_UUID}/text-generation/cause
-```
-
-**What it does per combination:**
-
-1. Builds a `CauseStatementRequest` with random tags, event name, and org name
-2. Fires the **same payload** `FLAKINESS_RUNS` times to measure flakiness
-3. Classifies each combo as `stable`, `flaky`, or `deterministic` (see below)
-4. For any combo that had at least one failure, runs **12 isolation variants** × `FLAKINESS_RUNS` to identify root cause
-
-**Console output:**
+The tool will test all 176 combinations one by one. Each line in the console shows the result for one combination:
 
 ```
   ✓ [001/176] Arts & Culture › Band › High School  (843ms)
-  ⚠ [009/176] Arts & Culture › Music  (1163ms)  ← generated=false, empty text  [FLAKY 2/3 pass]
-    → isolation: minimal:✓ all-tags:✓ fixed-names:✓ tag:Travel:✓ tag:Other:⚠ ...
-  ✗ [042/176] Education & Academics › Student Council  (1200ms)  ← ...  [DETERMINISTIC 0/3 pass]
+  ⚠ [009/176] Arts & Culture › Music  (1163ms)  [FLAKY 2/3 pass]
+  ✗ [042/176] Education & Academics › Student Council  (1200ms)  [DETERMINISTIC 0/3 pass]
 ```
 
-**Output files** (written to `results/`):
-
-| File | Contents |
+| Symbol | Meaning |
 |---|---|
-| `run-{timestamp}.json` | Full results — `meta` summary + `failures[]` + `all[]` |
-| `failures-{timestamp}.json` | Failures only — complete payloads ready for Postman/curl |
-| `run-{timestamp}.csv` | One row per combo with flakiness stats + per-isolation-variant fail rates |
+| `✓` | This combination always generated a cause statement successfully |
+| `⚠` | This combination sometimes worked and sometimes didn't (intermittent) |
+| `✗` | This combination always failed to generate a cause statement |
+
+A full run takes roughly **5–15 minutes** depending on how many failures are found (failures trigger extra diagnostic tests automatically).
+
+When it finishes, results are saved to the `results/` folder.
 
 ---
 
-### `npx tsx analyze.ts` — Cross-run aggregation
+## Step 6 — Open your results
+
+Open the `results/` folder. You'll see files named like:
+
+- `run-2026-05-12T10-30-00.csv` — **open this one** in Google Sheets or Excel
+- `run-2026-05-12T10-30-00.json` — developer format, you can ignore this
+- `failures-2026-05-12T10-30-00.json` — developer format, you can ignore this
+
+To open the CSV in **Google Sheets**: go to [sheets.google.com](https://sheets.google.com) → File → Import → Upload the CSV file.
+
+---
+
+## Understanding the results — `run-*.csv` columns
+
+Each row in this file represents one fundraiser type combination (e.g. "Sports & Athletics › Basketball › High School").
+
+### What combination was tested
+
+| Column | What it means |
+|---|---|
+| `organization_type` | The top-level fundraiser category (e.g. "Sports & Athletics", "Arts & Culture") |
+| `activity` | The specific activity within that category (e.g. "Basketball", "Band") |
+| `affiliation` | The school level or subgroup (e.g. "High School", "Middle School"); blank if not applicable for this activity |
+
+### What inputs were used
+
+| Column | What it means |
+|---|---|
+| `event_name` | The fundraiser name the tool made up for this test (e.g. "Spring Fundraiser") — randomized to make tests realistic |
+| `org_name` | The organization name the tool made up for this test (e.g. "Lincoln High School") — randomized |
+| `tags` | The fundraiser purpose tags included in this request (e.g. `Travel\|Fees\|Uniforms`) — randomized |
+
+### The verdict
+
+| Column | What it means |
+|---|---|
+| `flak_label` | **The main result.** `stable` = always worked, `flaky` = sometimes failed, `deterministic` = always failed |
+| `flak_rate` | Percentage of attempts that failed. `0%` = perfect, `100%` = completely broken |
+| `attempts_total` | How many times this exact request was sent (matches the `FLAKINESS_RUNS` setting) |
+| `attempts_failed` | How many of those attempts came back with an error or empty text |
+| `fail_reason` | Why it failed, when it did — e.g. `"empty text"` (AI returned nothing) or `"generated=false"` (API said generation failed) |
+| `first_response_text` | The actual AI-generated cause statement from the first attempt — useful to spot quality issues even on passing combinations |
+
+### Technical details
+
+| Column | What it means |
+|---|---|
+| `http_status` | Server response code: `200` means the server accepted the request; anything else (like `500`) means a server error before the AI even ran |
+| `latency_ms` | How long the AI took to respond, in milliseconds (1 second = 1,000 ms). Values above ~2,000 ms are slow. |
+
+### Isolation test columns (`iso:*`)
+
+When a combination fails, the tool automatically runs a series of controlled follow-up tests to figure out *why* it failed. Each `iso:*` column shows the failure rate (%) for one of those tests.
+
+| Column | What it tests | How to read it |
+|---|---|---|
+| `iso:minimal` | Sends only the category, with no tags and no names | If this fails, the taxonomy combination itself is broken — it's a prompt-level bug unrelated to tags or names |
+| `iso:all-tags` | Sends all 9 possible tags at once | If minimal passes but this fails, having too many tags at once confuses the AI |
+| `iso:fixed-names` | Sends all tags with generic names ("Annual Fundraiser" / "Test Organization") | If this fails but minimal passes, the random names were not the issue — it's about the tags |
+| `iso:tag:Travel` | Sends only the "Travel" tag | If this fails, the Travel tag specifically causes the problem for this combination |
+| `iso:tag:Fees` | Sends only the "Fees" tag | Same idea for Fees |
+| `iso:tag:Uniforms` | Sends only the "Uniforms" tag | Same idea for Uniforms |
+| `iso:tag:Equipment` | Sends only the "Equipment" tag | Same idea for Equipment |
+| `iso:tag:Other` | Sends only the "Other" tag | Same idea for Other |
+| `iso:tag:Competitions` | Sends only the "Competitions" tag | Same idea for Competitions |
+| `iso:tag:Trips` | Sends only the "Trips" tag | Same idea for Trips |
+| `iso:tag:Event` | Sends only the "Event" tag | Same idea for Event |
+| `iso:tag:Camperships` | Sends only the "Camperships" tag | Same idea for Camperships |
+
+**Quick guide to reading isolation columns:**
+- `iso:minimal` = `100%` → The combo is fundamentally broken. Tag this for the AI/prompt team.
+- `iso:minimal` = `0%` but `iso:tag:X` = `100%` → A specific tag causes the failure. Tag this for the AI team with the tag name.
+- `iso:minimal` = `0%` and all `iso:tag:*` = `0%` → The failure was likely caused by the random names or tags the tool used, not a real bug. May need more runs to confirm.
+- Columns are **blank** for combinations that never failed (no isolation testing was needed).
+
+---
+
+## Status label glossary
+
+| Label | What it means | What to do |
+|---|---|---|
+| `stable` | Every attempt generated a cause statement successfully | No action needed |
+| `flaky` | At least one attempt failed, but not all of them | Likely a backend reliability issue. Check if the failure rate is high (>50%) or low. If it fails 1 in 10 times, a user retry would fix it; if it fails 5 in 10 times, it needs a proper fix. |
+| `deterministic` | Every single attempt failed | A real bug. Check the `iso:minimal` column — if that also fails, the AI prompt doesn't handle this fundraiser type at all. |
+
+---
+
+## Optional: Cross-run analysis
+
+If you run the tool multiple times (e.g. on different days, or with different settings), you can aggregate all the results for higher statistical confidence:
 
 ```sh
 npx tsx analyze.ts
 ```
 
-Reads **all** `results/run-*.json` files and produces a combined analysis. Use after multiple runs to build statistical confidence.
+This reads all `run-*.json` files in the `results/` folder and creates a new file:
+`results/analysis-{timestamp}.csv`
 
-**Outputs:**
+Use this when you want to know: *"Has this combination been consistently broken across multiple test runs, or was it a one-time thing?"*
 
-1. **Per-combo aggregate fail rate** — with `low / medium / high` confidence based on number of runs, plus aggregated isolation variant breakdown
-2. **Tag correlation table** — fail rate per `CauseTag` vs global baseline (surfaces if specific tags are disproportionately involved in failures)
-3. **Latency anomaly detection** — combos with median latency > 2× the global median
-4. `results/analysis-{timestamp}.csv` — all per-combo stats with per-isolation-variant columns
+### Understanding `analysis-*.csv` columns
+
+| Column | What it means |
+|---|---|
+| `organization_type`, `activity`, `affiliation` | Same as in `run-*.csv` |
+| `total_runs` | How many separate test runs included this combination |
+| `total_attempts` | Total number of API calls across all runs combined |
+| `failed_attempts` | How many of those calls failed |
+| `flak_rate_pct` | Overall failure rate across all runs (e.g. `33.3%` = failed 1 in 3 times) |
+| `confidence` | How much to trust this data: `low` = only 1–2 runs, `medium` = 3–4 runs, `high` = 5+ runs |
+| `runs_stable` | How many runs where this combination always worked |
+| `runs_flaky` | How many runs where this combination sometimes failed |
+| `runs_deterministic` | How many runs where this combination always failed |
+| `median_latency_ms` | Typical response time across all runs — half of attempts were faster than this, half were slower |
+| `iso_failrate:minimal`, `iso_failrate:all-tags`, `iso_failrate:tag:X`, … | Aggregated failure rate for each isolation test across all runs — same interpretation as the `iso:*` columns in `run-*.csv` |
 
 ---
 
-## How flakiness classification works
+## Advanced settings
 
-Each combination is fired `FLAKINESS_RUNS` times with the **exact same payload**.
+You can customize the tool's behavior by editing these values in your `.env` file before running `npm start`:
 
-| `flakLabel` | Condition | Meaning |
+| Setting | Default | What it controls |
 |---|---|---|
-| `stable` | 0% of attempts failed | Consistently passes |
-| `flaky` | 1–99% of attempts failed | Intermittent — likely an infrastructure/LLM inference issue |
-| `deterministic` | 100% of attempts failed | Always fails — likely a prompt or taxonomy bug |
+| `CONCURRENCY` | `5` | How many combinations to test at the same time. Higher = faster run, but more load on the server. |
+| `RUNS_PER_COMBO` | `1` | How many independent passes to make over each combination (each with fresh random inputs). `1` is fine for a quick check; use `3`+ for higher confidence. |
+| `FLAKINESS_RUNS` | `3` | How many times to send the **exact same request** per combination to detect flakiness. Higher = more accurate flak detection, longer run time. |
 
-A response is classified as **failed** if `generated === false` OR `text` is empty/whitespace.
+Example — run faster with less thorough flakiness checking:
+```sh
+FLAKINESS_RUNS=1 CONCURRENCY=10 npm start
+```
 
----
-
-## How isolation testing works
-
-For any combo with `flakRate > 0`, the tool automatically fires 12 controlled variants to narrow down root cause:
-
-| Variant | Tags | Event name | Org name | Answers |
-|---|---|---|---|---|
-| `minimal` | `[Event]` | none | none | Does the taxonomy combo itself fail? |
-| `all-tags` | all 9 tags | none | none | Does the tag count/mix matter? |
-| `fixed-names` | all 9 tags | `"Annual Fundraiser"` | `"Test Organization"` | Do specific entity names affect it? |
-| `tag:Travel` | `[Travel]` | none | none | Is this specific tag the trigger? |
-| `tag:Fees` | `[Fees]` | none | none | ↑ same for each of the 9 tags |
-| … | … | … | … | |
-
-**Reading isolation results:**
-
-- `minimal` fails → the taxonomy combination itself is broken (prompt-level bug)
-- `minimal` passes but `all-tags` fails → too many tags overwhelm the prompt
-- `minimal` passes but `tag:X` fails → tag `X` specifically causes the failure
-- Everything passes → the original failure was caused by the randomized entity names
+Example — slower but higher confidence:
+```sh
+FLAKINESS_RUNS=5 RUNS_PER_COMBO=3 npm start
+```
 
 ---
 
-## Taxonomy coverage
+## How it works (technical reference)
 
-The tool generates **176 combinations** from `taxonomy.data.ts`:
+<details>
+<summary>Taxonomy coverage — 176 combinations tested</summary>
 
-| Category | Combos |
+| Category | Combinations |
 |---|---|
 | Sports & Athletics | 79 |
 | Sororities & Fraternities | 13 |
@@ -132,34 +252,39 @@ The tool generates **176 combinations** from `taxonomy.data.ts`:
 | Associations, Clubs & Community | 17 |
 | Health & Wellness | 7 |
 | Religious Organization | 5 |
-| Other / Personal | 0 (no activities) |
+| Other / Personal | 0 (no activities defined) |
 
-Each activity with affiliations produces one combination per affiliation. Activities without affiliations produce one combination with no affiliation field.
+Activities with affiliations produce one combination per affiliation level. Activities without affiliations produce a single combination with no affiliation.
 
----
+</details>
 
-## Project structure
+<details>
+<summary>What the tool does per combination</summary>
 
-```
-run.ts                  Main test runner
-analyze.ts              Cross-run aggregation and analysis
-taxonomy.data.ts        Taxonomy categories, activities, and affiliations
-request.interface.ts    CauseStatementRequest type + CauseTag enum
-response.interface.ts   CauseStatementResponse type
-.env.example            Template for required env vars
-results/
-  run-*.json            Full run output
-  failures-*.json       Failures-only output
-  run-*.csv             Per-combo CSV with isolation columns
-  analysis-*.csv        Cross-run aggregation CSV
-```
+1. Builds a request with random tags, event name, and org name
+2. Fires the **same payload** `FLAKINESS_RUNS` times to measure flakiness
+3. Classifies the combination as `stable`, `flaky`, or `deterministic`
+4. For any combination that had at least one failure, runs **12 isolation variants** × `FLAKINESS_RUNS` to identify root cause
 
----
+A response is classified as failed if `generated === false` OR the `text` field is empty or whitespace.
 
-## Interpreting results
+</details>
 
-**High flaky rate with short retry latency** → Server-side intermittency. A simple retry in the production client would resolve most failures. From the first run: flaky failures had avg initial latency of 1309ms vs 663ms on retry — the first attempt appears to hit a cold or overloaded path.
+<details>
+<summary>Output files written to results/</summary>
 
-**Deterministic failures** → Prompt or taxonomy bug. Check isolation results: if `minimal` also fails, the issue is the combination itself (activity/affiliation name not handled by the prompt). If only `all-tags` or a specific `tag:X` fails, the prompt doesn't handle that tag for that category.
+| File | Contents |
+|---|---|
+| `run-{timestamp}.csv` | **Main results file** — one row per combination with all stats and isolation columns |
+| `run-{timestamp}.json` | Full raw results for developers — includes complete request/response payloads |
+| `failures-{timestamp}.json` | Failed combinations only — complete payloads ready for Postman or curl |
+| `analysis-{timestamp}.csv` | Cross-run aggregation (only created by `npx tsx analyze.ts`) |
 
-**Latency anomalies** → Combos with consistently high latency may be causing server-side timeouts that manifest as empty responses.
+</details>
+
+<details>
+<summary>Latency anomalies</summary>
+
+The cross-run analysis also flags combinations with a median response time more than 2× higher than the global median. These slow combinations can cause timeouts that show up as empty responses — so a combination marked `flaky` with high latency may actually be a timeout issue rather than a prompt bug.
+
+</details>
