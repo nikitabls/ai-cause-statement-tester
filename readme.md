@@ -128,7 +128,7 @@ Each row in this file represents one fundraiser type combination (e.g. "Sports &
 |---|---|
 | `event_name` | The fundraiser name the tool made up for this test (e.g. "Spring Fundraiser") — randomized to make tests realistic |
 | `org_name` | The organization name the tool made up for this test (e.g. "Lincoln High School") — randomized |
-| `tags` | The fundraiser purpose tags included in this request (e.g. `Travel\|Fees\|Uniforms`) — randomized |
+| `tags` | The fundraiser purpose tags included in this request (e.g. `Travel\|Fees\|Supplies`) — randomized |
 
 ### The verdict
 
@@ -159,13 +159,13 @@ When a combination fails, the tool automatically runs a series of controlled fol
 | `iso:fixed-names` | Sends all tags with generic names ("Annual Fundraiser" / "Test Organization") | If this fails but minimal passes, the random names were not the issue — it's about the tags |
 | `iso:tag:Travel` | Sends only the "Travel" tag | If this fails, the Travel tag specifically causes the problem for this combination |
 | `iso:tag:Fees` | Sends only the "Fees" tag | Same idea for Fees |
-| `iso:tag:Uniforms` | Sends only the "Uniforms" tag | Same idea for Uniforms |
+| `iso:tag:Supplies` | Sends only the "Supplies" tag | Same idea for Supplies |
 | `iso:tag:Equipment` | Sends only the "Equipment" tag | Same idea for Equipment |
 | `iso:tag:Other` | Sends only the "Other" tag | Same idea for Other |
-| `iso:tag:Competitions` | Sends only the "Competitions" tag | Same idea for Competitions |
-| `iso:tag:Trips` | Sends only the "Trips" tag | Same idea for Trips |
+| `iso:tag:Facilities` | Sends only the "Facilities" tag | Same idea for Facilities |
+| `iso:tag:Tournament` | Sends only the "Tournament" tag | Same idea for Tournament |
 | `iso:tag:Event` | Sends only the "Event" tag | Same idea for Event |
-| `iso:tag:Camperships` | Sends only the "Camperships" tag | Same idea for Camperships |
+| `iso:tag:Scholarships` | Sends only the "Scholarships" tag | Same idea for Scholarships |
 
 **Quick guide to reading isolation columns:**
 - `iso:minimal` = `100%` → The combo is fundamentally broken. Tag this for the AI/prompt team.
