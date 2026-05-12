@@ -14,7 +14,7 @@ const JWT_TOKEN = process.env.JWT_TOKEN;
 const USER_UUID = process.env.USER_UUID;
 const CONCURRENCY = parseInt(process.env.CONCURRENCY ?? "5", 10);
 const RUNS_PER_COMBO = parseInt(process.env.RUNS_PER_COMBO ?? "1", 10);
-const RETRY_ON_FAIL = parseInt(process.env.RETRY_ON_FAIL ?? "3", 10);
+const FLAKINESS_RUNS = parseInt(process.env.FLAKINESS_RUNS ?? "3", 10);
 
 if (!JWT_TOKEN) {
   console.error("ERROR: JWT_TOKEN is not set in .env");
@@ -98,40 +98,49 @@ function buildCombinations(): Combination[] {
 // Result types
 // ---------------------------------------------------------------------------
 
-interface RetryAttempt {
+type FlakLabel = "stable" | "flaky" | "deterministic";
+
+interface Attempt {
   response: CauseStatementResponse | null;
   httpStatus: number | null;
   latencyMs: number;
   failed: boolean;
+  failReason: string | null;
+  errorMessage?: string;
+}
+
+interface IsolationVariant {
+  variant: string; // e.g. "minimal", "all-tags", "fixed-names", "tag:Travel"
+  tags: CauseTag[];
+  eventName?: string;
+  orgName?: string;
+  attempts: Attempt[];
+  flakRate: number;
+  flakLabel: FlakLabel;
 }
 
 interface RunResult {
   combination: Combination;
   request: CauseStatementRequest;
+  // allAttempts: all FLAKINESS_RUNS attempts with the same payload
+  allAttempts: Attempt[];
+  flakRate: number;           // 0.0 – 1.0
+  flakLabel: FlakLabel;
+  // Convenience fields from the first attempt:
   response: CauseStatementResponse | null;
   httpStatus: number | null;
   latencyMs: number;
-  failed: boolean;
+  failed: boolean;            // true if ANY attempt failed (flakRate > 0)
   failReason: string | null;
-  errorMessage?: string;
-  // Only populated when the initial attempt failed:
-  retries: RetryAttempt[];
-  // null = didn't fail; true = deterministic (all retries failed); false = flaky (a retry passed)
-  deterministic: boolean | null;
+  // Only populated for combos with flakRate > 0:
+  isolationResults: IsolationVariant[];
 }
 
 // ---------------------------------------------------------------------------
-// Low-level HTTP call — reused for initial attempt and retries
+// Low-level HTTP call
 // ---------------------------------------------------------------------------
 
-async function fireRequest(request: CauseStatementRequest): Promise<{
-  response: CauseStatementResponse | null;
-  httpStatus: number | null;
-  latencyMs: number;
-  failed: boolean;
-  failReason: string | null;
-  errorMessage?: string;
-}> {
+async function fireRequest(request: CauseStatementRequest): Promise<Attempt> {
   const t0 = Date.now();
   try {
     const { data, status } = await axios.post<CauseStatementResponse>(BASE_URL, request, {
@@ -161,8 +170,57 @@ async function fireRequest(request: CauseStatementRequest): Promise<{
   }
 }
 
+/** Fire the same payload FLAKINESS_RUNS times and compute flakRate + flakLabel. */
+async function fireMany(request: CauseStatementRequest): Promise<{
+  attempts: Attempt[];
+  flakRate: number;
+  flakLabel: FlakLabel;
+}> {
+  const attempts: Attempt[] = [];
+  for (let i = 0; i < FLAKINESS_RUNS; i++) {
+    attempts.push(await fireRequest(request));
+  }
+  const failCount = attempts.filter((a) => a.failed).length;
+  const flakRate = failCount / attempts.length;
+  const flakLabel: FlakLabel =
+    flakRate === 0 ? "stable" : flakRate === 1 ? "deterministic" : "flaky";
+  return { attempts, flakRate, flakLabel };
+}
+
 // ---------------------------------------------------------------------------
-// Request execution (with retries on failure)
+// Isolation testing
+// ---------------------------------------------------------------------------
+
+const ISOLATION_VARIANTS: Array<{ variant: string; tags: CauseTag[]; eventName?: string; orgName?: string }> = [
+  { variant: "minimal",     tags: [CauseTag.Event] },
+  { variant: "all-tags",    tags: ALL_TAGS },
+  { variant: "fixed-names", tags: ALL_TAGS, eventName: "Annual Fundraiser", orgName: "Test Organization" },
+  ...ALL_TAGS.map((tag) => ({ variant: `tag:${tag}`, tags: [tag] })),
+];
+
+async function runIsolation(combo: Combination): Promise<IsolationVariant[]> {
+  const results: IsolationVariant[] = [];
+  for (const v of ISOLATION_VARIANTS) {
+    const request: CauseStatementRequest = {
+      tags: v.tags,
+      template: {
+        replaceable_attributes: {
+          FUNDRAISER_ORGANIZATION_TYPE: combo.FUNDRAISER_ORGANIZATION_TYPE,
+          FUNDRAISER_ACTIVITY: combo.FUNDRAISER_ACTIVITY,
+          ...(combo.FUNDRAISER_AFFILIATION ? { FUNDRAISER_AFFILIATION: combo.FUNDRAISER_AFFILIATION } : {}),
+          ...(v.eventName ? { FUNDRAISING_EVENT_NAME: v.eventName } : {}),
+          ...(v.orgName ? { FUNDRAISER_ORGANIZATION_NAME: v.orgName } : {}),
+        },
+      },
+    };
+    const { attempts, flakRate, flakLabel } = await fireMany(request);
+    results.push({ variant: v.variant, tags: v.tags, eventName: v.eventName, orgName: v.orgName, attempts, flakRate, flakLabel });
+  }
+  return results;
+}
+
+// ---------------------------------------------------------------------------
+// Request execution — uniform FLAKINESS_RUNS per combo
 // ---------------------------------------------------------------------------
 
 async function runRequest(
@@ -192,32 +250,37 @@ async function runRequest(
     ` ${combo.FUNDRAISER_ORGANIZATION_TYPE} › ${combo.FUNDRAISER_ACTIVITY}` +
     (combo.FUNDRAISER_AFFILIATION ? ` › ${combo.FUNDRAISER_AFFILIATION}` : "");
 
-  const initial = await fireRequest(request);
+  const { attempts, flakRate, flakLabel } = await fireMany(request);
+  const first = attempts[0];
+  const anyFailed = flakRate > 0;
 
-  if (!initial.failed) {
-    console.log(`  ✓ ${label}  (${initial.latencyMs}ms)`);
-    return {
-      combination: combo, request,
-      response: initial.response, httpStatus: initial.httpStatus, latencyMs: initial.latencyMs,
-      failed: false, failReason: null, retries: [], deterministic: null,
-    };
-  }
+  const passCount = attempts.filter((a) => !a.failed).length;
+  const icon = flakLabel === "stable" ? "✓" : flakLabel === "deterministic" ? "✗" : "⚠";
+  const detail = anyFailed ? `  ← ${first.failReason ?? attempts.find((a) => a.failReason)?.failReason}  [${flakLabel.toUpperCase()} ${passCount}/${attempts.length} pass]` : "";
+  console.log(`  ${icon} ${label}  (${first.latencyMs}ms)${detail}`);
 
-  // Failed — retry with the exact same payload to classify deterministic vs flaky
-  const retries: RetryAttempt[] = [];
-  for (let i = 0; i < RETRY_ON_FAIL; i++) {
-    const r = await fireRequest(request);
-    retries.push({ response: r.response, httpStatus: r.httpStatus, latencyMs: r.latencyMs, failed: r.failed });
+  let isolationResults: IsolationVariant[] = [];
+  if (anyFailed) {
+    process.stdout.write(`    → running isolation tests for ${label.trim()}...`);
+    isolationResults = await runIsolation(combo);
+    const isoSummary = isolationResults
+      .map((v) => `${v.variant}:${v.flakLabel === "stable" ? "✓" : v.flakLabel === "deterministic" ? "✗" : "⚠"}`)
+      .join(" ");
+    console.log(`\r    → isolation: ${isoSummary}`);
   }
-  const deterministic = retries.every((r) => r.failed);
-  const cls = deterministic ? "DETERMINISTIC" : "FLAKY";
-  console.log(`  ✗ ${label}  (${initial.latencyMs}ms)  ← ${initial.failReason}  [${cls}]`);
 
   return {
-    combination: combo, request,
-    response: initial.response, httpStatus: initial.httpStatus, latencyMs: initial.latencyMs,
-    failed: true, failReason: initial.failReason, errorMessage: initial.errorMessage,
-    retries, deterministic,
+    combination: combo,
+    request,
+    allAttempts: attempts,
+    flakRate,
+    flakLabel,
+    response: first.response,
+    httpStatus: first.httpStatus,
+    latencyMs: first.latencyMs,
+    failed: anyFailed,
+    failReason: first.failReason ?? attempts.find((a) => a.failReason)?.failReason ?? null,
+    isolationResults,
   };
 }
 
@@ -286,12 +349,15 @@ async function main() {
     }))
   );
 
+  const requestsPerCombo = FLAKINESS_RUNS;
+  const isolationPerFailingCombo = ISOLATION_VARIANTS.length * FLAKINESS_RUNS;
   console.log(`\nAI Cause Statement Tester`);
-  console.log(`Endpoint      : ${BASE_URL}`);
-  console.log(`Combinations  : ${combos.length}`);
-  console.log(`Runs/combo    : ${RUNS_PER_COMBO}  →  ${tasks.length} total requests`);
-  console.log(`Retries/fail  : ${RETRY_ON_FAIL}`);
-  console.log(`Concurrency   : ${CONCURRENCY}\n`);
+  console.log(`Endpoint         : ${BASE_URL}`);
+  console.log(`Combinations     : ${combos.length}`);
+  console.log(`Runs/combo       : ${RUNS_PER_COMBO}  →  ${tasks.length} combos to test`);
+  console.log(`Flakiness runs   : ${requestsPerCombo}  (same payload fired N times per combo)`);
+  console.log(`Isolation tests  : ${ISOLATION_VARIANTS.length} variants × ${FLAKINESS_RUNS} runs each (only for failing combos)`);
+  console.log(`Concurrency      : ${CONCURRENCY}\n`);
 
   const startedAt = Date.now();
   const results = await runWithConcurrency(tasks, CONCURRENCY);
@@ -300,8 +366,9 @@ async function main() {
   // --- Summary ---
   const failed = results.filter((r) => r.failed);
   const passed = results.length - failed.length;
-  const deterministic = failed.filter((r) => r.deterministic === true);
-  const flaky = failed.filter((r) => r.deterministic === false);
+  const deterministic = results.filter((r) => r.flakLabel === "deterministic");
+  const flaky = results.filter((r) => r.flakLabel === "flaky");
+  const stable = results.filter((r) => r.flakLabel === "stable");
   const rate = ((failed.length / results.length) * 100).toFixed(1);
   const latencies = results.map((r) => r.latencyMs);
   const avgLatency = (latencies.reduce((a, b) => a + b, 0) / latencies.length).toFixed(0);
@@ -313,10 +380,10 @@ async function main() {
   console.log(`Results`);
   console.log(`${"─".repeat(60)}`);
   console.log(`  Total            : ${results.length}`);
-  console.log(`  Passed           : ${passed}`);
-  console.log(`  Failed           : ${failed.length} (${rate}%)`);
-  console.log(`  ├ Deterministic  : ${deterministic.length}  (all ${RETRY_ON_FAIL} retries also failed)`);
-  console.log(`  └ Flaky          : ${flaky.length}  (passed on at least one retry)`);
+  console.log(`  ✓ Stable         : ${stable.length}`);
+  console.log(`  ⚠ Flaky          : ${flaky.length}  (fails sometimes — infra issue)`);
+  console.log(`  ✗ Deterministic  : ${deterministic.length}  (always fails — prompt/taxonomy bug)`);
+  console.log(`  Failed ≥ once    : ${failed.length} (${rate}%)`);
   console.log(`  Time             : ${elapsed}s`);
   console.log(`  Latency          : avg ${avgLatency}ms  min ${minLatency}ms  max ${maxLatency}ms  p95 ${p95Latency}ms`);
 
@@ -328,79 +395,97 @@ async function main() {
     "Failures by affiliation"
   );
 
-  if (failed.length > 0) {
-    console.log(`\nFailed combinations:`);
-    for (const r of failed) {
-      const c = r.combination;
-      const name =
-        `${c.FUNDRAISER_ORGANIZATION_TYPE} › ${c.FUNDRAISER_ACTIVITY}` +
-        (c.FUNDRAISER_AFFILIATION ? ` › ${c.FUNDRAISER_AFFILIATION}` : "");
-      const cls = r.deterministic === true ? " [DETERMINISTIC]" : r.deterministic === false ? " [FLAKY]" : "";
-      console.log(`  ✗  ${name}  [${r.failReason}]${cls}`);
+  // --- Isolation summary for deterministic combos ---
+  if (deterministic.length > 0) {
+    console.log(`\nDeterministic isolation results:`);
+    for (const r of deterministic) {
+      const name = `${r.combination.FUNDRAISER_ORGANIZATION_TYPE} › ${r.combination.FUNDRAISER_ACTIVITY}` +
+        (r.combination.FUNDRAISER_AFFILIATION ? ` › ${r.combination.FUNDRAISER_AFFILIATION}` : "");
+      console.log(`  ${name}`);
+      for (const v of r.isolationResults) {
+        const icon = v.flakLabel === "stable" ? "✓" : v.flakLabel === "deterministic" ? "✗" : "⚠";
+        const pct = (v.flakRate * 100).toFixed(0);
+        console.log(`    ${icon} ${v.variant.padEnd(20)} fail ${pct}%`);
+      }
     }
   }
 
-  // --- Save results file ---
+  if (failed.length > 0) {
+    console.log(`\nAll failing combinations:`);
+    for (const r of failed) {
+      const c = r.combination;
+      const name = `${c.FUNDRAISER_ORGANIZATION_TYPE} › ${c.FUNDRAISER_ACTIVITY}` +
+        (c.FUNDRAISER_AFFILIATION ? ` › ${c.FUNDRAISER_AFFILIATION}` : "");
+      const passCount = r.allAttempts.filter((a) => !a.failed).length;
+      console.log(`  ${r.flakLabel === "deterministic" ? "✗" : "⚠"}  ${name}  [${r.flakLabel.toUpperCase()} ${passCount}/${r.allAttempts.length} pass]  [${r.failReason}]`);
+    }
+  }
+
+  // --- Save files ---
   const resultsDir = path.join(process.cwd(), "results");
   fs.mkdirSync(resultsDir, { recursive: true });
-
   const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
-  const outPath = path.join(resultsDir, `run-${timestamp}.json`);
 
   const meta = {
     runAt: new Date().toISOString(),
     endpoint: BASE_URL,
     combinationsCount: combos.length,
     runsPerCombo: RUNS_PER_COMBO,
-    retriesOnFail: RETRY_ON_FAIL,
+    flakinessRuns: FLAKINESS_RUNS,
+    isolationVariants: ISOLATION_VARIANTS.length,
     total: results.length,
-    passed,
-    failed: failed.length,
-    deterministic: deterministic.length,
+    stable: stable.length,
     flaky: flaky.length,
+    deterministic: deterministic.length,
+    failedAtLeastOnce: failed.length,
     failureRate: `${rate}%`,
     elapsedSeconds: parseFloat(elapsed),
-    latency: {
-      avgMs: parseInt(avgLatency),
-      minMs: minLatency,
-      maxMs: maxLatency,
-      p95Ms: p95Latency,
-    },
+    latency: { avgMs: parseInt(avgLatency), minMs: minLatency, maxMs: maxLatency, p95Ms: p95Latency },
   };
 
+  const outPath = path.join(resultsDir, `run-${timestamp}.json`);
   fs.writeFileSync(outPath, JSON.stringify({ meta, failures: failed, all: results }, null, 2));
 
-  // --- Failures-only JSON (full payloads for Postman/curl investigation) ---
   const failPath = path.join(resultsDir, `failures-${timestamp}.json`);
   fs.writeFileSync(failPath, JSON.stringify({ meta, failures: failed }, null, 2));
 
-  // --- Write CSV ---
+  // --- CSV: one row per combo ---
   const csvPath = path.join(resultsDir, `run-${timestamp}.csv`);
-  const f = (v: string | null | undefined) => `"${String(v ?? "").replace(/"/g, '""')}"`;
+  const q = (v: string | null | undefined) => `"${String(v ?? "").replace(/"/g, '""')}"`;
   const csvHeader = [
     "organization_type", "activity", "affiliation",
     "event_name", "org_name", "tags",
-    "http_status", "latency_ms", "generated",
-    "failed", "deterministic", "fail_reason", "text",
+    "http_status", "latency_ms",
+    "flak_label", "flak_rate", "attempts_total", "attempts_failed",
+    "fail_reason", "first_response_text",
+    // one column per isolation variant
+    ...ISOLATION_VARIANTS.map((v) => `iso:${v.variant}`),
   ].join(",");
 
-  const csvRows = results.map((r) =>
-    [
-      f(r.combination.FUNDRAISER_ORGANIZATION_TYPE),
-      f(r.combination.FUNDRAISER_ACTIVITY),
-      f(r.combination.FUNDRAISER_AFFILIATION),
-      f(r.request.template.replaceable_attributes.FUNDRAISING_EVENT_NAME),
-      f(r.request.template.replaceable_attributes.FUNDRAISER_ORGANIZATION_NAME),
-      f(r.request.tags.join("|")),
+  const csvRows = results.map((r) => {
+    const attFailed = r.allAttempts.filter((a) => a.failed).length;
+    const isoValues = ISOLATION_VARIANTS.map((v) => {
+      const iso = r.isolationResults.find((x) => x.variant === v.variant);
+      return iso ? `${(iso.flakRate * 100).toFixed(0)}%` : "";
+    });
+    return [
+      q(r.combination.FUNDRAISER_ORGANIZATION_TYPE),
+      q(r.combination.FUNDRAISER_ACTIVITY),
+      q(r.combination.FUNDRAISER_AFFILIATION),
+      q(r.request.template.replaceable_attributes.FUNDRAISING_EVENT_NAME),
+      q(r.request.template.replaceable_attributes.FUNDRAISER_ORGANIZATION_NAME),
+      q(r.request.tags.join("|")),
       r.httpStatus ?? "",
       r.latencyMs,
-      r.response?.generated ?? "",
-      r.failed,
-      r.deterministic ?? "",
-      f(r.failReason),
-      f(r.response?.text),
-    ].join(",")
-  );
+      r.flakLabel,
+      (r.flakRate * 100).toFixed(0) + "%",
+      r.allAttempts.length,
+      attFailed,
+      q(r.failReason),
+      q(r.response?.text),
+      ...isoValues,
+    ].join(",");
+  });
 
   fs.writeFileSync(csvPath, [csvHeader, ...csvRows].join("\n"));
 
