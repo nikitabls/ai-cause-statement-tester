@@ -15,6 +15,9 @@ const USER_UUID = process.env.USER_UUID;
 const CONCURRENCY = parseInt(process.env.CONCURRENCY ?? "5", 10);
 const RUNS_PER_COMBO = parseInt(process.env.RUNS_PER_COMBO ?? "1", 10);
 const FLAKINESS_RUNS = parseInt(process.env.FLAKINESS_RUNS ?? "3", 10);
+const MODE = (process.env.MODE ?? "taxonomy").toLowerCase();
+// Maximum tag-subset size in tags mode (default: all 9 tags, so all 511 non-empty subsets)
+const MAX_TAG_SIZE = parseInt(process.env.MAX_TAG_SIZE ?? "9", 10);
 
 if (!JWT_TOKEN) {
   console.error("ERROR: JWT_TOKEN is not set in .env");
@@ -118,6 +121,38 @@ function buildCombinations(): Combination[] {
   return combos;
 }
 
+/** Returns all non-empty subsets of ALL_TAGS with at most MAX_TAG_SIZE tags (2^9 − 1 = 511 by default). */
+function buildTagCombinations(): CauseTag[][] {
+  const combos: CauseTag[][] = [];
+  for (let mask = 1; mask < (1 << ALL_TAGS.length); mask++) {
+    const subset: CauseTag[] = [];
+    for (let i = 0; i < ALL_TAGS.length; i++) {
+      if (mask & (1 << i)) subset.push(ALL_TAGS[i]);
+    }
+    if (subset.length <= MAX_TAG_SIZE) combos.push(subset);
+  }
+  return combos;
+}
+
+/**
+ * Resolve the fixed taxonomy combo used in tags mode.
+ * Override with TAG_MODE_ORG_TYPE / TAG_MODE_ACTIVITY / TAG_MODE_AFFILIATION env vars.
+ * Defaults to the first combo in the taxonomy.
+ */
+function resolveTagModeCombo(): Combination {
+  const orgType     = process.env.TAG_MODE_ORG_TYPE;
+  const activity    = process.env.TAG_MODE_ACTIVITY;
+  const affiliation = process.env.TAG_MODE_AFFILIATION;
+  if (orgType && activity) {
+    return {
+      FUNDRAISER_ORGANIZATION_TYPE: orgType,
+      FUNDRAISER_ACTIVITY: activity,
+      ...(affiliation ? { FUNDRAISER_AFFILIATION: affiliation } : {}),
+    };
+  }
+  return buildCombinations()[0];
+}
+
 // ---------------------------------------------------------------------------
 // Result types
 // ---------------------------------------------------------------------------
@@ -158,6 +193,19 @@ interface RunResult {
   failReason: string | null;
   // Only populated for combos with flakRate > 0:
   isolationResults: IsolationVariant[];
+}
+
+interface TagRunResult {
+  tags: CauseTag[];
+  request: CauseStatementRequest;
+  allAttempts: Attempt[];
+  flakRate: number;
+  flakLabel: FlakLabel;
+  response: CauseStatementResponse | null;
+  httpStatus: number | null;
+  latencyMs: number;
+  failed: boolean;
+  failReason: string | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -241,6 +289,52 @@ async function runIsolation(combo: Combination): Promise<IsolationVariant[]> {
     results.push({ variant: v.variant, tags: v.tags, eventName: v.eventName, orgName: v.orgName, attempts, flakRate, flakLabel });
   }
   return results;
+}
+
+async function runTagRequest(
+  tags: CauseTag[],
+  combo: Combination,
+  taskIndex: number,
+  total: number,
+): Promise<TagRunResult> {
+  const request: CauseStatementRequest = {
+    tags,
+    template: {
+      replaceable_attributes: {
+        FUNDRAISING_EVENT_NAME: categoryPick(combo.FUNDRAISER_ORGANIZATION_TYPE, "EVENT"),
+        FUNDRAISER_ORGANIZATION_NAME: categoryPick(combo.FUNDRAISER_ORGANIZATION_TYPE, "ORG"),
+        FUNDRAISER_ORGANIZATION_TYPE: combo.FUNDRAISER_ORGANIZATION_TYPE,
+        FUNDRAISER_ACTIVITY: combo.FUNDRAISER_ACTIVITY,
+        ...(combo.FUNDRAISER_AFFILIATION ? { FUNDRAISER_AFFILIATION: combo.FUNDRAISER_AFFILIATION } : {}),
+      },
+    },
+  };
+
+  const tagLabel =
+    `[${String(taskIndex + 1).padStart(String(total).length, " ")}/${total}]` +
+    ` [${tags.join(", ")}]`;
+  const { attempts, flakRate, flakLabel } = await fireMany(request);
+  const first = attempts[0];
+  const anyFailed = flakRate > 0;
+  const passCount = attempts.filter((a) => !a.failed).length;
+  const icon = flakLabel === "stable" ? "✓" : flakLabel === "deterministic" ? "✗" : "⚠";
+  const detail = anyFailed
+    ? `  ← ${first.failReason ?? attempts.find((a) => a.failReason)?.failReason}  [${flakLabel.toUpperCase()} ${passCount}/${attempts.length} pass]`
+    : "";
+  console.log(`  ${icon} ${tagLabel}  (${first.latencyMs}ms)${detail}`);
+
+  return {
+    tags,
+    request,
+    allAttempts: attempts,
+    flakRate,
+    flakLabel,
+    response: first.response,
+    httpStatus: first.httpStatus,
+    latencyMs: first.latencyMs,
+    failed: anyFailed,
+    failReason: first.failReason ?? attempts.find((a) => a.failReason)?.failReason ?? null,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -362,7 +456,124 @@ function failureBreakdown(
 // Main
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Tags mode
+// ---------------------------------------------------------------------------
+
+async function mainTagsMode(): Promise<void> {
+  const combo = resolveTagModeCombo();
+  const tagCombos = buildTagCombinations();
+  const total = tagCombos.length;
+  const maxTagCount = Math.max(...tagCombos.map((t) => t.length));
+
+  const comboLabel =
+    `${combo.FUNDRAISER_ORGANIZATION_TYPE} › ${combo.FUNDRAISER_ACTIVITY}` +
+    (combo.FUNDRAISER_AFFILIATION ? ` › ${combo.FUNDRAISER_AFFILIATION}` : "");
+
+  console.log(`\nAI Cause Statement Tester — Tag Combinations Mode`);
+  console.log(`Endpoint         : ${BASE_URL}`);
+  console.log(`Taxonomy combo   : ${comboLabel}`);
+  console.log(`Tag combinations : ${total}  (all non-empty subsets up to size ${maxTagCount})`);
+  console.log(`Flakiness runs   : ${FLAKINESS_RUNS}  (same payload fired N times per tag combo)`);
+  console.log(`Concurrency      : ${CONCURRENCY}`);
+  console.log(`Tags in scope    : ${ALL_TAGS.join(", ")}\n`);
+
+  const results: TagRunResult[] = [];
+  let idx = 0;
+  async function worker() {
+    while (idx < total) {
+      const i = idx++;
+      results.push(await runTagRequest(tagCombos[i], combo, i, total));
+    }
+  }
+
+  const startedAt = Date.now();
+  await Promise.all(Array.from({ length: Math.min(CONCURRENCY, total) }, worker));
+  const elapsed = ((Date.now() - startedAt) / 1000).toFixed(1);
+
+  const failed = results.filter((r) => r.failed);
+  const stable = results.filter((r) => r.flakLabel === "stable");
+  const flaky = results.filter((r) => r.flakLabel === "flaky");
+  const deterministic = results.filter((r) => r.flakLabel === "deterministic");
+  const rate = ((failed.length / results.length) * 100).toFixed(1);
+  const latencies = results.map((r) => r.latencyMs);
+  const avgLatency = (latencies.reduce((a, b) => a + b, 0) / latencies.length).toFixed(0);
+  const minLatency = Math.min(...latencies);
+  const maxLatency = Math.max(...latencies);
+
+  console.log(`\n${"─".repeat(60)}`);
+  console.log(`Results`);
+  console.log(`${"─".repeat(60)}`);
+  console.log(`  Total            : ${results.length}`);
+  console.log(`  ✓ Stable         : ${stable.length}`);
+  console.log(`  ⚠ Flaky          : ${flaky.length}  (fails sometimes — infra issue)`);
+  console.log(`  ✗ Deterministic  : ${deterministic.length}  (always fails — prompt/taxonomy bug)`);
+  console.log(`  Failed ≥ once    : ${failed.length} (${rate}%)`);
+  console.log(`  Time             : ${elapsed}s`);
+  console.log(`  Latency          : avg ${avgLatency}ms  min ${minLatency}ms  max ${maxLatency}ms`);
+
+  if (failed.length > 0) {
+    // Show which tags appear most often in failing combinations
+    console.log(`\nTag presence in failing combinations:`);
+    for (const tag of ALL_TAGS) {
+      const withTag = failed.filter((r) => r.tags.includes(tag)).length;
+      if (withTag === 0) continue;
+      const pct = ((withTag / failed.length) * 100).toFixed(0);
+      const bar = "█".repeat(Math.round((withTag / failed.length) * 20)).padEnd(20);
+      console.log(`  ${bar} ${pct.padStart(3)}%  ${withTag}/${failed.length}  ${tag}`);
+    }
+
+    console.log(`\nAll failing tag combinations:`);
+    for (const r of failed) {
+      const passCount = r.allAttempts.filter((a) => !a.failed).length;
+      const icon = r.flakLabel === "deterministic" ? "✗" : "⚠";
+      console.log(`  ${icon}  [${r.tags.join(", ")}]  [${r.flakLabel.toUpperCase()} ${passCount}/${r.allAttempts.length} pass]  [${r.failReason}]`);
+    }
+  }
+
+  // Save results
+  const resultsDir = path.join(process.cwd(), "results");
+  fs.mkdirSync(resultsDir, { recursive: true });
+  const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
+
+  const meta = {
+    mode: "tags",
+    runAt: new Date().toISOString(),
+    endpoint: BASE_URL,
+    taxonomyCombo: comboLabel,
+    tagCombinationsCount: total,
+    maxTagSize: maxTagCount,
+    flakinessRuns: FLAKINESS_RUNS,
+    total: results.length,
+    stable: stable.length,
+    flaky: flaky.length,
+    deterministic: deterministic.length,
+    failedAtLeastOnce: failed.length,
+    failureRate: `${rate}%`,
+    elapsedSeconds: parseFloat(elapsed),
+    latency: { avgMs: parseInt(avgLatency), minMs: minLatency, maxMs: maxLatency },
+  };
+
+  const outPath = path.join(resultsDir, `tags-run-${timestamp}.json`);
+  fs.writeFileSync(outPath, JSON.stringify({ meta, failures: failed, all: results }, null, 2));
+
+  const failPath = path.join(resultsDir, `tags-failures-${timestamp}.json`);
+  fs.writeFileSync(failPath, JSON.stringify({ meta, failures: failed }, null, 2));
+
+  console.log(`\nResults saved  → ${path.relative(process.cwd(), outPath)}`);
+  console.log(`Failures saved → ${path.relative(process.cwd(), failPath)}\n`);
+}
+
+// ---------------------------------------------------------------------------
+// Main
+// ---------------------------------------------------------------------------
+
 async function main() {
+  if (MODE === "tags") {
+    await mainTagsMode();
+    return;
+  }
+
   const combos = buildCombinations();
   const tasks: Task[] = combos.flatMap((combo, i) =>
     Array.from({ length: RUNS_PER_COMBO }, (_, run) => ({

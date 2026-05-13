@@ -225,8 +225,57 @@ You can customize the tool's behavior by editing these values in your `.env` fil
 | `CONCURRENCY` | `5` | How many combinations to test at the same time. Higher = faster run, but more load on the server. |
 | `RUNS_PER_COMBO` | `1` | How many independent passes to make over each combination (each with fresh random inputs). `1` is fine for a quick check; use `3`+ for higher confidence. |
 | `FLAKINESS_RUNS` | `3` | How many times to send the **exact same request** per combination to detect flakiness. Higher = more accurate flak detection, longer run time. |
+| `MODE` | `taxonomy` | Which test mode to run. `taxonomy` (default) tests all 176 fundraiser type combinations. `tags` tests all tag combinations — see below. |
 | `EVENT_NAMES_[SLUG]` | *(required)* | Comma-separated list of fundraiser event names for a specific fundraiser category. **All 9 are required** — the tool will exit immediately with an error if any are missing. Valid slugs: `ARTS`, `COMMUNITY`, `EDUCATION`, `HEALTH`, `RELIGIOUS`, `GREEK`, `SPORTS`, `OTHER`, `PERSONAL`. Example: `EVENT_NAMES_SPORTS=Season Kickoff Fund,Championship Sendoff,Game Day Campaign` |
 | `ORG_NAMES_[SLUG]` | *(required)* | Comma-separated list of organization names for a specific fundraiser category. Same 9 slugs as above. Example: `ORG_NAMES_SPORTS=Falcon Athletic Boosters,Summit Soccer Club,Team United` |
+
+---
+
+## Tag combinations mode
+
+Run with `MODE=tags` to sweep all possible tag combinations against a single fundraiser type, rather than sweeping fundraiser types with random tags. This is useful for finding which specific tags (or tag combinations) break cause statement generation.
+
+```sh
+MODE=tags npm start
+```
+
+The tool tests all **511 non-empty subsets** of the 9 tags (`Travel`, `Fees`, `Equipment`, `Supplies`, `Facilities`, `Scholarships`, `Event`, `Tournament`, `Other`) against a fixed taxonomy combination. Each line shows:
+
+```
+  ✓ [001/511] [Travel]  (841ms)
+  ✓ [002/511] [Fees]  (912ms)
+  ✗ [047/511] [Travel, Fees, Tournament]  (1200ms)  ← empty text  [DETERMINISTIC 0/3 pass]
+```
+
+At the end, the summary shows which individual tags appear most often in failing combinations — a quick way to identify which tags are correlated with failures.
+
+### Limiting the subset size
+
+511 combinations can take a while. Use `MAX_TAG_SIZE` to test only subsets up to a certain size:
+
+```sh
+# Test only single tags (9 combinations)
+MODE=tags MAX_TAG_SIZE=1 npm start
+
+# Test single tags and pairs (9 + 36 = 45 combinations)
+MODE=tags MAX_TAG_SIZE=2 npm start
+```
+
+| Setting | Default | What it controls |
+|---|---|---|
+| `MAX_TAG_SIZE` | `9` | Maximum number of tags in a subset. `1` = single-tag sweep only. `2` = single tags + pairs. Default tests all 511 subsets. |
+| `TAG_MODE_ORG_TYPE` | *(first taxonomy combo)* | The fundraiser organization type to test against (e.g. `Sports & Athletics`). Must be set together with `TAG_MODE_ACTIVITY`. |
+| `TAG_MODE_ACTIVITY` | *(first taxonomy combo)* | The activity to test against (e.g. `Basketball`). |
+| `TAG_MODE_AFFILIATION` | *(none)* | Optional affiliation (e.g. `High School`). |
+
+Example — test all tag pairs against a specific combo:
+```sh
+MODE=tags MAX_TAG_SIZE=2 TAG_MODE_ORG_TYPE="Sports & Athletics" TAG_MODE_ACTIVITY="Basketball" TAG_MODE_AFFILIATION="High School" npm start
+```
+
+Results are saved to `results/tags-run-*.json` and `results/tags-failures-*.json`.
+
+---
 
 Example — run faster with less thorough flakiness checking:
 ```sh
